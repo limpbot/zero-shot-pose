@@ -3,6 +3,7 @@ import numpy as np
 # Descriptor extractor
 from zsp.method.zero_shot_pose import DescriptorExtractor, ZeroShotPoseMethod
 from pytorch3d.renderer.cameras import get_world_to_view_transform
+from pytorch3d.renderer import PerspectiveCameras
 
 # Utils
 from zsp.method.zero_shot_pose_utils import (
@@ -14,6 +15,8 @@ from zsp.method.zero_shot_pose_utils import (
 def frames_to_relative_pose(ref_image: torch.Tensor, all_target_images: torch.Tensor,
                             ref_scalings: torch.Tensor, target_scalings: torch.Tensor,
                             ref_depth_map: torch.Tensor, target_depth_map: torch.Tensor,
+                            ref_cam_extr: torch.Tensor, target_cam_extr: torch.Tensor,
+                            ref_cam_intr: torch.Tensor, target_cam_intr: torch.Tensor,
                             take_best_view=True,
                             ransac_thresh=0.2, n_target=5, binning='log', patch_size=8, num_correspondences=50,
                             kmeans=True, best_frame_mode='corresponding_feats_similarity', device='cpu'):
@@ -25,8 +28,10 @@ def frames_to_relative_pose(ref_image: torch.Tensor, all_target_images: torch.Te
         target_scalings (torch.Tensor): N_TGTx2 (H,W) rescaling from original resolution
         ref_depth_map (torch.Tensor): Bx1xHxW
         target_depth_map (torch.Tensor): N_TGTx1xHxW
-        ref_camera (torch.Tensor): Bx4x4
-        target_camera (torch.Tensor): N_TGTx4x4
+        ref_cam_extr (torch.Tensor): Bx4x4
+        target_cam_extr (torch.Tensor): N_TGTx4x4
+        ref_cam_intr (torch.Tensor): Bx4x4
+        target_cam_intr (torch.Tensor): N_TGTx4x4
     Returns:
         target_tform_ref (torch.Tensor): Bx4x4
 
@@ -66,6 +71,9 @@ def frames_to_relative_pose(ref_image: torch.Tensor, all_target_images: torch.Te
         num_correspondences=num_correspondences,
         take_best_view=take_best_view,
     )
+
+    #1. transform to PIL
+    #2. desc.transform
 
     # ---------------
     # GET FEATURES
@@ -111,15 +119,15 @@ def frames_to_relative_pose(ref_image: torch.Tensor, all_target_images: torch.Te
         target_frame = best_idxs[i]
         # cls = dataset.samples[uq_idx[i]]['class']
 
-        ref_scaling = ref_meta_data['scalings'][i]
-        ref_depth = ref_meta_data['depth_maps'][i]
-        ref_camera = ref_meta_data['cameras'][i]
+        ref_scaling = ref_scalings[i] #  ref_meta_data['scalings'][i]
+        ref_depth = ref_depth_map[i] #  ref_meta_data['depth_maps'][i]
+        ref_camera = get_perspective_camera(cam_tform_obj=ref_cam_extr[i], cam_intr=ref_cam_intr[i], img_size=ref_depth_map[i].shape[1:])  # ref_dep ref_meta_data['cameras'][i]
         #ref_pcd = ref_meta_data['pcd'][i]
         #ref_trans = ref_transform[i]
 
-        target_scaling = target_meta_data['scalings'][i][target_frame]
-        target_depth = target_meta_data['depth_maps'][i][target_frame]
-        target_camera = target_meta_data['cameras'][i][target_frame]
+        target_scaling = target_scalings[i] #  target_meta_data['scalings'][i][target_frame]
+        target_depth = target_depth_map[i][target_frame]  # target_meta_data['depth_maps'][i][target_frame]
+        target_camera = get_perspective_camera(cam_tform_obj=target_cam_extr[i][target_frame], cam_intr=target_cam_intr[i][target_frame], img_size=target_depth_map[i][target_frame].shape[1:])  #  ref_cam_extr[i][target_frame], ref_cam_intr[i][target_frame]  # target_meta_data['cameras'][i][target_frame]
         #target_pcd = target_meta_data['pcd'][i]
         #target_trans = target_transform[i]
 
@@ -169,3 +177,33 @@ def frames_to_relative_pose(ref_image: torch.Tensor, all_target_images: torch.Te
             trans21 = pose.solve_umeyama_ransac(world_corr1, world_corr2)
         all_trans21.append(trans21)
     return trans21
+
+def get_perspective_camera(cam_tform_obj: torch.Tensor, cam_intr: torch.Tensor, img_size: torch.Tensor):
+    """
+    Args:
+        cam_tform_obj (torch.Tensor): 4x4
+        cam_intr (torch.Tensor): 4x4
+        img_size (torch.Tensor): 2,
+
+    Returns:
+        cameras (PerspectiveCameras): B,...
+    """
+    dtype = cam_tform_obj.dtype
+    device = cam_tform_obj.device
+
+    focal_length = torch.Tensor([cam_intr[0, 0], cam_intr[1, 1]]).to(device=device, dtype=dtype)
+    principal_point = torch.Tensor([cam_intr[0, 2], cam_intr[1, 2]]).to(device=device, dtype=dtype)
+
+    t3d_tform_pscl3d = torch.Tensor([[-1., 0., 0., 0.],
+                                     [0., -1., 0., 0.],
+                                     [0., 0., 1., 0.],
+                                     [0., 0., 0., 1.]]).to(device=device, dtype=dtype)
+    t3d_cam_tform_obj = torch.matmul(t3d_tform_pscl3d, cam_tform_obj)
+
+    R = t3d_cam_tform_obj[:3, :3].T[None,]
+    t = t3d_cam_tform_obj[:3, 3][None,]
+
+    cameras = PerspectiveCameras(device=device, R=R, T=t, focal_length=focal_length[None,],
+                                 principal_point=principal_point[None,], in_ndc=False,
+                                 image_size=img_size[None,])
+    return cameras
