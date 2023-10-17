@@ -176,7 +176,7 @@ def frames_to_relative_pose(ref_image: torch.Tensor, all_target_images: torch.Te
             # -----------------
             trans21 = pose.solve_umeyama_ransac(world_corr1, world_corr2)
         all_trans21.append(trans21)
-    return trans21
+    return all_trans21
 
 def get_perspective_camera(cam_tform_obj: torch.Tensor, cam_intr: torch.Tensor, img_size: torch.Tensor):
     """
