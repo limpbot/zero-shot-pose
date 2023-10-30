@@ -36,7 +36,7 @@ def predict():
             ref_cam_intr = data['ref_cam_intr'],
             target_cam_intr = data['target_cam_intr'],
             take_best_view = True,
-            ransac_thresh = 0.2, n_target = 5, binning = 'log', patch_size = 8, num_correspondences = 50,
+            ransac_thresh = 0.2, n_target = 10, binning = 'log', patch_size = 8, num_correspondences = 50,
             kmeans = True, best_frame_mode = 'corresponding_feats_similarity', device = 'cpu')
 
         data_return = {'obj2_tform_obj1', obj2_tform_obj1}
