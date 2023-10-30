@@ -23,11 +23,11 @@ def frames_to_relative_pose(ref_image: torch.Tensor, all_target_images: torch.Te
     """
     Args:
         ref_image (torch.Tensor): Bx3xSxS
-        all_target_images (torch.Tensor): N_TGTx3xSxS
+        all_target_images (torch.Tensor): BxN_TGTx3xSxS
         ref_scalings (torch.Tensor): Bx2 (H,W) rescaling from original resolution
-        target_scalings (torch.Tensor): N_TGTx2 (H,W) rescaling from original resolution
+        target_scalings (torch.Tensor): BxN_TGTx2 (H,W) rescaling from original resolution
         ref_depth_map (torch.Tensor): Bx1xHxW
-        target_depth_map (torch.Tensor): N_TGTx1xHxW
+        target_depth_map (torch.Tensor): BxN_TGTx1xHxW
         ref_cam_extr (torch.Tensor): Bx4x4
         target_cam_extr (torch.Tensor): N_TGTx4x4
         ref_cam_intr (torch.Tensor): Bx4x4
@@ -43,7 +43,7 @@ def frames_to_relative_pose(ref_image: torch.Tensor, all_target_images: torch.Te
         camera: A PyTorch3D camera object corresponding the frame's viewpoint,
             corrected for cropping if it happened.
     """
-
+    device = 'cuda:0'
     # ---------------
     # SET UP DESCRIPTOR CLASS
     # ---------------
@@ -59,6 +59,8 @@ def frames_to_relative_pose(ref_image: torch.Tensor, all_target_images: torch.Te
         kmeans=kmeans,
         best_frame_mode=best_frame_mode
     )
+    #  'dino_vitbase16_pretrain.pth', 'dino_deitsmall8_pretrain.pth'
+    desc.load_model('dino_deitsmall8_pretrain.pth', device)
     # ---------------
     # SET UP ZERO-SHOT POSE CLASS
     # ---------------
