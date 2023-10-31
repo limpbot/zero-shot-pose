@@ -1,7 +1,6 @@
 import torch
 import numpy as np
-# Descriptor extractor
-from zsp.method.zero_shot_pose import DescriptorExtractor, ZeroShotPoseMethod
+
 from pytorch3d.renderer.cameras import get_world_to_view_transform
 from pytorch3d.renderer import PerspectiveCameras
 
@@ -12,14 +11,12 @@ from zsp.method.zero_shot_pose_utils import (
     trans21_error,
 )
 
-def frames_to_relative_pose(ref_image: torch.Tensor, all_target_images: torch.Tensor,
+def frames_to_relative_pose(desc, pose, ref_image: torch.Tensor, all_target_images: torch.Tensor,
                             ref_scalings: torch.Tensor, target_scalings: torch.Tensor,
                             ref_depth_map: torch.Tensor, target_depth_map: torch.Tensor,
                             ref_cam_extr: torch.Tensor, target_cam_extr: torch.Tensor,
                             ref_cam_intr: torch.Tensor, target_cam_intr: torch.Tensor,
-                            take_best_view=True,
-                            ransac_thresh=0.2, n_target=5, binning='log', patch_size=8, num_correspondences=50,
-                            kmeans=True, best_frame_mode='corresponding_feats_similarity', device='cpu'):
+                            n_target=10, device='cpu'):
     """
     Args:
         ref_image (torch.Tensor): Bx3xSxS
@@ -43,52 +40,41 @@ def frames_to_relative_pose(ref_image: torch.Tensor, all_target_images: torch.Te
         camera: A PyTorch3D camera object corresponding the frame's viewpoint,
             corrected for cropping if it happened.
     """
-    device = 'cuda:0'
-    # ---------------
-    # SET UP DESCRIPTOR CLASS
-    # ---------------
-    desc = DescriptorExtractor(
-        patch_size=patch_size,
-        feat_layer=9,
-        high_res=False,
-        binning=binning,
-        image_size=224,
-        n_target=n_target,
-        saliency_map_thresh=0.1,
-        num_correspondences=num_correspondences,
-        kmeans=kmeans,
-        best_frame_mode=best_frame_mode
-    )
-    #  'dino_vitbase16_pretrain.pth', 'dino_deitsmall8_pretrain.pth'
-    desc.load_model('dino_deitsmall8_pretrain.pth', device)
-    # ---------------
-    # SET UP ZERO-SHOT POSE CLASS
-    # ---------------
-    pose = ZeroShotPoseMethod(
-        batched_correspond=True,
-        num_plot_examples_per_batch=1,
-        saliency_map_thresh=0.1,
-        ransac_thresh=ransac_thresh,
-        n_target=n_target,
-        num_correspondences=num_correspondences,
-        take_best_view=take_best_view,
-    )
 
-    #1. transform to PIL
-    #2. desc.transform
+    B = ref_image.size(0)
+    N_TGT = all_target_images.size(1)
+    img_size = torch.LongTensor(list(ref_image.shape[-2:]))
+    print('B: ', B, ' N_TGT:', N_TGT)
+    # 1. transform to PIL
+    # 2. desc.transform
+    import torchvision
+    pil_transfrom = torchvision.transforms.ToPILImage()
+    desc_transform = desc.get_transform()
+    transform = torchvision.transforms.Compose([pil_transfrom, desc_transform])
+    all_target_images = torch.stack([transform(all_target_images[b, n]) for b in range(B) for n in range(N_TGT)], dim=0).reshape(B, N_TGT, 3, *img_size).to(device=device)
+    ref_image = torch.stack([transform(ref_image[b]) for b in range(B)], dim=0).to(device=device)
 
+    #return Image.fromarray((image_rgb.permute(1, 2, 0) * 255).numpy().astype(np.uint8))
+    # image_norm_mean = (0.485, 0.456, 0.406)
+    # image_norm_std = (0.229, 0.224, 0.225)
+    # image_size = 224  # Image size
+    # image_transform = transforms.Compose([
+    #     transforms.Resize((image_size, image_size)),
+    #     transforms.ToTensor(),
+    #     transforms.Normalize(mean=image_norm_mean, std=image_norm_std)
+    # ])
     # ---------------
     # GET FEATURES
     # ---------------
+    print('get feats....')
     # Ref images shape: B x 3 x S x S (S = size, assumed square images)
     # Target images shape: B x N_TGT x 3 x S x S
-    batch_size = ref_image.size(0)
     all_images = torch.cat([ref_image.unsqueeze(1), all_target_images], dim=1).to(device)  # B x (N_TGT + 1) x 3 x S x S
     # Extract features, attention maps, and cls_tokens
     features, attn, output_cls_tokens = desc.extract_features_and_attn(all_images)
     # Create descriptors from features, return descriptors and attn in appropriate shapes
     # attn shape Bx(n_tgt+1)xhxtxt, features shape Bx(n_tgt+1)x1x(t-1)xfeat_dim
-    features, attn = desc.create_reshape_descriptors(features, attn, batch_size, device)
+    features, attn = desc.create_reshape_descriptors(features, attn, B, device)
     # Split ref/target, repeat ref to match size of target, and flatten into batch dimension
     ref_feats, target_feats, ref_attn, target_attn = desc.split_ref_target(features, attn)
 
@@ -105,7 +91,7 @@ def frames_to_relative_pose(ref_image: torch.Tensor, all_target_images: torch.Te
     # ----------------
     _, _, _, t, t = attn.size()
     N = int(np.sqrt(t - 1))  # N is the height or width of the feature map
-    similarities, best_idxs = desc.find_closest_match(attn, output_cls_tokens, sim_selected_12, batch_size)
+    similarities, best_idxs = desc.find_closest_match(attn, output_cls_tokens, sim_selected_12, B)
     # -----------------
     # COMPUTE POSE OFFSET
     # -----------------
@@ -113,7 +99,7 @@ def frames_to_relative_pose(ref_image: torch.Tensor, all_target_images: torch.Te
     all_errs = []
     all_points1 = []
     all_points2 = []
-    for i in range(batch_size):
+    for i in range(B):
         # -----------------
         # PREPARE DATA
         # -----------------
@@ -121,15 +107,15 @@ def frames_to_relative_pose(ref_image: torch.Tensor, all_target_images: torch.Te
         target_frame = best_idxs[i]
         # cls = dataset.samples[uq_idx[i]]['class']
 
-        ref_scaling = ref_scalings[i] #  ref_meta_data['scalings'][i]
+        # ref_scaling = ref_scalings[i] #  ref_meta_data['scalings'][i]
         ref_depth = ref_depth_map[i] #  ref_meta_data['depth_maps'][i]
-        ref_camera = get_perspective_camera(cam_tform_obj=ref_cam_extr[i], cam_intr=ref_cam_intr[i], img_size=ref_depth_map[i].shape[1:])  # ref_dep ref_meta_data['cameras'][i]
+        ref_camera = get_perspective_camera(cam_tform_obj=ref_cam_extr[i], cam_intr=ref_cam_intr[i], img_size=img_size)  # ref_dep ref_meta_data['cameras'][i]
         #ref_pcd = ref_meta_data['pcd'][i]
         #ref_trans = ref_transform[i]
 
-        target_scaling = target_scalings[i] #  target_meta_data['scalings'][i][target_frame]
+        #target_scaling = target_scalings[i] #  target_meta_data['scalings'][i][target_frame]
         target_depth = target_depth_map[i][target_frame]  # target_meta_data['depth_maps'][i][target_frame]
-        target_camera = get_perspective_camera(cam_tform_obj=target_cam_extr[i][target_frame], cam_intr=target_cam_intr[i][target_frame], img_size=target_depth_map[i][target_frame].shape[1:])  #  ref_cam_extr[i][target_frame], ref_cam_intr[i][target_frame]  # target_meta_data['cameras'][i][target_frame]
+        target_camera = get_perspective_camera(cam_tform_obj=target_cam_extr[i][target_frame], cam_intr=target_cam_intr[i][target_frame], img_size=img_size)  #  ref_cam_extr[i][target_frame], ref_cam_intr[i][target_frame]  # target_meta_data['cameras'][i][target_frame]
         #target_pcd = target_meta_data['pcd'][i]
         #target_trans = target_transform[i]
 
@@ -146,7 +132,7 @@ def frames_to_relative_pose(ref_image: torch.Tensor, all_target_images: torch.Te
         all_points2.append(points2_rescaled.clone().int().long())
         # Now rescale to the *original* image pixel size, i.e. prior to resizing crop to square
         points1_rescaled, points2_rescaled = (scale_points_to_orig(p, s) for p, s in zip(
-            (points1_rescaled, points2_rescaled), (ref_scaling, target_scaling)
+            (points1_rescaled, points2_rescaled), (ref_scalings, target_scalings)
         ))
         # --- If "take best view", simply return identity transform estimate ---
         if pose.take_best_view:
@@ -155,20 +141,20 @@ def frames_to_relative_pose(ref_image: torch.Tensor, all_target_images: torch.Te
         else:
             frame1 = {
                 'shape': ref_depth.shape[1:],
-                'scaling': ref_scaling,
+                'scaling': ref_scalings,
                 'depth_map': ref_depth,
                 'camera': ref_camera
             }
 
             frame2 = {
                 'shape': target_depth.shape[1:],
-                'scaling': target_scaling,
+                'scaling': target_scalings,
                 'depth_map': target_depth,
                 'camera': target_camera
             }
 
-            struct_pcd1 = get_structured_pcd(frame1, world_coordinates=False)
-            struct_pcd2 = get_structured_pcd(frame2, world_coordinates=False)
+            struct_pcd1 = get_structured_pcd(frame1, world_coordinates=True)
+            struct_pcd2 = get_structured_pcd(frame2, world_coordinates=True)
 
             world_corr1 = struct_pcd1[points1_rescaled[:, 0], points1_rescaled[:, 1]].numpy()
             world_corr2 = struct_pcd2[points2_rescaled[:, 0], points2_rescaled[:, 1]].numpy()
@@ -177,7 +163,12 @@ def frames_to_relative_pose(ref_image: torch.Tensor, all_target_images: torch.Te
             # COMPUTE RELATIVE OFFSET
             # -----------------
             trans21 = pose.solve_umeyama_ransac(world_corr1, world_corr2)
+            #target_obj_tform_ref_obj = target_camera.get_world_to_view_transform().inverse().compose(trans21).compose(ref_camera.get_world_to_view_transform())
+            #trans21 = target_obj_tform_ref_obj.get_matrix()[0].T
+            trans21 = trans21.get_matrix()[0].T
+            print(trans21.shape)
         all_trans21.append(trans21)
+    all_trans21 = torch.stack(all_trans21, dim=0)
     return all_trans21
 
 def get_perspective_camera(cam_tform_obj: torch.Tensor, cam_intr: torch.Tensor, img_size: torch.Tensor):
@@ -196,13 +187,20 @@ def get_perspective_camera(cam_tform_obj: torch.Tensor, cam_intr: torch.Tensor, 
     focal_length = torch.Tensor([cam_intr[0, 0], cam_intr[1, 1]]).to(device=device, dtype=dtype)
     principal_point = torch.Tensor([cam_intr[0, 2], cam_intr[1, 2]]).to(device=device, dtype=dtype)
 
+    # scale=1.
+    # half_image_size_output = torch.tensor(img_size, dtype=torch.float) / 2.0
+    # half_min_image_size_output = half_image_size_output.min()
+    # # rescaled principal point and focal length in ndc
+    # principal_point = (half_image_size_output - principal_point * scale) / half_min_image_size_output
+    # focal_length = focal_length * scale / half_min_image_size_output
+
     t3d_tform_pscl3d = torch.Tensor([[-1., 0., 0., 0.],
                                      [0., -1., 0., 0.],
                                      [0., 0., 1., 0.],
                                      [0., 0., 0., 1.]]).to(device=device, dtype=dtype)
     t3d_cam_tform_obj = torch.matmul(t3d_tform_pscl3d, cam_tform_obj)
 
-    R = t3d_cam_tform_obj[:3, :3].T[None,]
+    R = t3d_cam_tform_obj[:3, :3].T[None,]  # .T[None,]
     t = t3d_cam_tform_obj[:3, 3][None,]
 
     cameras = PerspectiveCameras(device=device, R=R, T=t, focal_length=focal_length[None,],
