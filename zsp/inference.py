@@ -118,12 +118,14 @@ def frames_to_relative_pose(desc, pose, ref_image: torch.Tensor, all_target_imag
 
         # ref_scaling = ref_scalings[i] #  ref_meta_data['scalings'][i]
         ref_depth = ref_depth_map[i] #  ref_meta_data['depth_maps'][i]
+        img_size = torch.LongTensor(list(ref_depth.shape[-2:]))
         ref_camera = get_perspective_camera(cam_tform_obj=ref_cam_extr[i], cam_intr=ref_cam_intr[i], img_size=img_size)  # ref_dep ref_meta_data['cameras'][i]
         #ref_pcd = ref_meta_data['pcd'][i]
         #ref_trans = ref_transform[i]
 
         #target_scaling = target_scalings[i] #  target_meta_data['scalings'][i][target_frame]
         target_depth = target_depth_map[i][target_frame]  # target_meta_data['depth_maps'][i][target_frame]
+        img_size = torch.LongTensor(list(ref_depth.shape[-2:]))
         target_camera = get_perspective_camera(cam_tform_obj=target_cam_extr[i][target_frame], cam_intr=target_cam_intr[i][target_frame], img_size=img_size)  #  ref_cam_extr[i][target_frame], ref_cam_intr[i][target_frame]  # target_meta_data['cameras'][i][target_frame]
         #target_pcd = target_meta_data['pcd'][i]
         #target_trans = target_transform[i]

@@ -137,7 +137,7 @@ def get_structured_pcd(frame, inpaint=True, world_coordinates=False):
     xy_grid_ndc = xy_grid_ndc.view(-1, 3)
 
     # --- 4. Unproject ---
-    unproj = camera.unproject_points(xy_grid_ndc, world_coordinates)    # (H*W, 3)
+    unproj = camera.unproject_points(xy_grid_ndc, world_coordinates, from_ndc=True)    # (H*W, 3)
 
     # --- 5. Convert back to image shape, remove homogeneous dimension ---
     structured_pcd = unproj.view(H, W, 3)
