@@ -11,6 +11,14 @@ from zsp.method.zero_shot_pose_utils import (
     trans21_error,
 )
 
+import os
+import matplotlib.pyplot as plt
+from zsp.utils.visuals import (
+    plot_pcd,
+    tile_ims_horizontal_highlight_best,
+    draw_correspondences_lines
+)
+
 def frames_to_relative_pose(desc, pose, ref_image: torch.Tensor, all_target_images: torch.Tensor,
                             ref_scalings: torch.Tensor, target_scalings: torch.Tensor,
                             ref_depth_map: torch.Tensor, target_depth_map: torch.Tensor,
@@ -96,6 +104,7 @@ def frames_to_relative_pose(desc, pose, ref_image: torch.Tensor, all_target_imag
     # COMPUTE POSE OFFSET
     # -----------------
     all_trans21 = []
+    all_imgs = []
     all_errs = []
     all_points1 = []
     all_points2 = []
@@ -168,8 +177,62 @@ def frames_to_relative_pose(desc, pose, ref_image: torch.Tensor, all_target_imag
             trans21 = trans21.get_matrix()[0].T
             print(trans21.shape)
         all_trans21.append(trans21)
+
+        #save_name = f'sample_{i}.png'
+        #fig_dir = 'plots'
+        # save_name = os.path.join(fig_dir, save_name)
+
+        fig, axs = plt.subplot_mosaic([['A', 'B', 'B'],
+                                       ['C', 'C', 'D']],
+                                      figsize=(10, 5))
+        for ax in axs.values():
+            ax.axis('off')
+        axs['A'].set_title('Reference image')
+        axs['B'].set_title('Query images')
+        axs['C'].set_title('Correspondences')
+        axs['D'].set_title('Reference object in query pose')
+        fig.suptitle(f'Error: ', fontsize=6) # {all_errs[i]:.2f}
+        axs['A'].imshow(desc.denorm_torch_to_pil(ref_image[i].detach().cpu()))
+        # ax[1].plot(similarities[i].cpu().numpy())
+        tgt_pils = [desc.denorm_torch_to_pil(
+            all_target_images[i][j].detach().cpu()) for j in range(N_TGT)]
+        tgt_pils = tile_ims_horizontal_highlight_best(tgt_pils, highlight_idx=best_idxs[i].detach().cpu())
+        axs['B'].imshow(tgt_pils)
+
+        draw_correspondences_lines(all_points1[i].detach().cpu(), all_points2[i].detach().cpu(),
+                                   desc.denorm_torch_to_pil(ref_image[i].detach().cpu()),
+                                   desc.denorm_torch_to_pil(all_target_images[i][best_idxs[i]].detach().cpu()),
+                                   axs['C'])
+
+        # If we haven't already shown or saved the plot, then we need to
+        # draw the figure first...
+        fig.canvas.draw()
+
+        # Now we can save it to a numpy array.
+        data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+        data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+
+        all_imgs.append(torch.from_numpy(data))
+
+        #pcd1 = ref_meta_data['pcd'][i]
+        #pcd2 = target_meta_data['pcd'][i]
+        #trans21 = all_trans21[i]
+        #cam1 = ref_meta_data['cameras'][i]
+        #trans = cam1.get_world_to_view_transform().compose(trans21)
+        #X1, numpoints1 = oputil.convert_pointclouds_to_tensor(pcd1)
+        #trans_X1 = trans.transform_points(X1)
+        ## Project the cam2points to NDC+then into screen
+        #P_im = transform_cameraframe_to_screen(cam1, trans_X1, image_size=(500, 500))
+        #P_im = P_im.squeeze()
+        #plot_pcd(P_im, pcd1, axs['D'])
+
+        #plt.tight_layout()
+        #plt.savefig(save_name + '.png', dpi=150)
+        plt.close('all')
+
     all_trans21 = torch.stack(all_trans21, dim=0)
-    return all_trans21
+    all_imgs = torch.stack(all_imgs, dim=0)
+    return all_trans21, all_imgs
 
 def get_perspective_camera(cam_tform_obj: torch.Tensor, cam_intr: torch.Tensor, img_size: torch.Tensor):
     """

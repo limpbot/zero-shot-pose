@@ -72,7 +72,7 @@ def predict():
         data = pickle.load(bytes_io)
         print(data)
 
-        obj2_tform_obj1 = frames_to_relative_pose(
+        obj2_tform_obj1, all_imgs = frames_to_relative_pose(
             desc=desc, pose=pose,
             ref_image = data['ref_image'],
             all_target_images = data['all_target_images'],
@@ -86,7 +86,7 @@ def predict():
             target_cam_intr = data['target_cam_intr'],
             n_target=n_target, device = device)
 
-        data_return = {'obj2_tform_obj1': obj2_tform_obj1}
+        data_return = {'obj2_tform_obj1': obj2_tform_obj1, 'all_imgs': all_imgs}
         data_return_json = {}
         for key, value in data_return.items():
             if isinstance(value, torch.Tensor):
